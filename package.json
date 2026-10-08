@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.3"
   },
   "description": "Bell schedule display for schools: the current period, a countdown and today's schedule, run from a Google Sheet per school.",
