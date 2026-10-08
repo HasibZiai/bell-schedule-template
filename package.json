@@ -1,0 +1,33 @@
+{
+  "name": "bell-schedule-template",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "generate-types": "wrangler types",
+    "build-template": "node scripts/build-template.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^14.3.3",
+    "astro": "^7.3.5",
+    "wrangler": "^4.143.0"
+  },
+  "allowScripts": {
+    "esbuild": true
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
+  },
+  "description": "Bell schedule display for schools: the current period, a countdown and today's schedule, run from a Google Sheet per school.",
+  "license": "MIT",
+  "author": "Hasib Ziai"
+}

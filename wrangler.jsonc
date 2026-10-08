@@ -1,0 +1,19 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"compatibility_date": "2026-09-26",
+	"compatibility_flags": ["global_fetch_strictly_public"],
+	"name": "bell-schedule-template",
+	"main": "@astrojs/cloudflare/entrypoints/server",
+	"assets": {
+		"directory": "./dist",
+		"binding": "ASSETS"
+	},
+	"observability": {
+		"enabled": true
+	},
+	// Schools and their sheets are listed in src/schools.config.ts. A school's sheet can set its own
+	// time zone on the Settings tab; this is the fallback.
+	"vars": {
+		"DEFAULT_TZ": "America/Los_Angeles"
+	}
+}

@@ -1,0 +1,15 @@
+# Opens pull requests for dependency updates; CI runs the checks and tests on each one.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      # One pull request for all minor and patch updates instead of one per package.
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,282 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { findSchool, loadSchool } from '../../lib/school';
+import { addDays, formatTime, isIsoDate, weekdayOf, zonedNow } from '../../lib/time';
+import type { DaySchedule } from '../../lib/types';
+import { resolveDay, yearEndNotice } from '../../lib/workbook';
+
+export const prerender = false;
+
+// Lists every school day (from today on, or ?all) with the schedule it resolves to, plus every problem
+// found in the school's sheet, so mistakes (a typo'd schedule name, a bad time) are caught before they
+// reach a display.
+
+const config = findSchool(Astro.params.school);
+if (!config) return Astro.redirect('/');
+const school = await loadSchool(config);
+const wb = school.workbook;
+const base = `/${school.slug}`;
+
+const today = zonedNow(school.timeZone).date;
+const yearEnd = yearEndNotice(wb, today);
+const showAll = Astro.url.searchParams.has('all');
+const requested = Astro.url.searchParams.get('from');
+const from = isIsoDate(requested) ? requested : showAll && wb.firstDay ? wb.firstDay : today;
+const specialDates = [...wb.special.keys()].sort();
+const until = [wb.lastDay, specialDates.at(-1), addDays(from, 30)].filter((d): d is string => !!d).sort().at(-1)!;
+
+const days: DaySchedule[] = [];
+for (let d = from; d <= until && days.length < 400; d = addDays(d, 1)) {
+	const day = resolveDay(wb, d);
+	// Skip ordinary weekends; keep anything the sheet says about them.
+	if (weekdayOf(d) % 6 === 0 && day.source !== 'special' && day.status === 'no-school') continue;
+	days.push(day);
+}
+
+const unconfigured = new Map<string, string[]>();
+for (const d of days) {
+	if (d.status === 'unconfigured') unconfigured.set(d.label!, [...(unconfigured.get(d.label!) ?? []), d.date]);
+}
+
+const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const shortDate = (date: string) => {
+	const [y, m, d] = date.split('-').map(Number);
+	return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
+};
+const monthOf = (date: string) => {
+	const [y, m] = date.split('-').map(Number);
+	return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'long', year: 'numeric' });
+};
+const hours = (blocks: { start: string; end: string; kind?: string }[]) => {
+	const student = blocks.filter((b) => b.kind !== 'staff');
+	return student.length ? `${formatTime(student[0].start, wb.clock24)} – ${formatTime(student.at(-1)!.end, wb.clock24)}` : '';
+};
+const usedOn = (name: string) =>
+	[...wb.weekdays].filter(([, s]) => s.toLowerCase() === name.toLowerCase()).map(([w]) => WEEKDAY_NAMES[w]).join(', ');
+---
+
+<Layout title={`${school.name} · Schedule Preview`}>
+	<div class="page">
+		<header>
+			<p class="crumb"><a href={base}>← Bell display</a></p>
+			<h1>{school.name}</h1>
+			<p class="lede">
+				What the display will show for each day, from the{" "}
+				{school.editUrl ? <a href={school.editUrl} target="_blank" rel="noopener">school's schedule sheet</a> : 'built-in demo schedule'}.
+				Changes to the sheet show up within a few minutes. Click a date to open the display for that day.
+			</p>
+			<p class="filters">
+				{showAll ? <a href={`${base}/preview`}>From today</a> : <a href={`${base}/preview?all`}>Show whole year</a>}
+			</p>
+		</header>
+
+		{school.error && (
+			<div class="alert bad">
+				<strong>Couldn't read the schedule sheet.</strong> {school.error}
+				{school.stale && wb.schedules.size > 0 && ' Showing the last copy that loaded.'}
+			</div>
+		)}
+
+		{yearEnd && (
+			<div class:list={['alert', yearEnd.ended ? 'bad' : 'warn']}>
+				<strong>{yearEnd.ended ? 'The school year is over.' : 'The school year is ending soon.'}</strong> {yearEnd.message}
+			</div>
+		)}
+
+		{wb.warnings.length > 0 && (
+			<div class="alert warn">
+				<strong>{wb.warnings.length} thing{wb.warnings.length > 1 ? 's' : ''} to fix in the sheet</strong>
+				<ul>{wb.warnings.map((w) => <li>{w}</li>)}</ul>
+			</div>
+		)}
+
+		{unconfigured.size > 0 && (
+			<div class="alert warn">
+				<strong>{unconfigured.size} schedule{unconfigured.size > 1 ? 's' : ''} without bell times.</strong>
+				These days will show "Special schedule" instead of periods. Add a tab with exactly this name, or fix the spelling.
+				<ul>
+					{[...unconfigured].map(([label, dates]) => (
+						<li><code>{label}</code> — {dates.map(shortDate).join(', ')}</li>
+					))}
+				</ul>
+			</div>
+		)}
+
+		<h2>Bell schedules</h2>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Schedule</th><th>Periods</th><th>Hours</th><th>Normal on</th></tr>
+				</thead>
+				<tbody>
+					{[...wb.schedules.values()].map((s) => (
+						<tr>
+							<td>{s.name}</td>
+							<td class="notes">{s.blocks.map((b) => b.name).join(' · ')}</td>
+							<td class="hours">{hours(s.blocks)}</td>
+							<td>{usedOn(s.name) || <span class="muted">Special days only</span>}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
+
+		<h2>Days</h2>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Date</th><th>Schedule</th><th>Hours</th><th>Note</th></tr>
+				</thead>
+				<tbody>
+					{days.map((d, i) => (
+						<>
+							{(i === 0 || monthOf(days[i - 1].date) !== monthOf(d.date)) && (
+								<tr class="month"><th colspan="4">{monthOf(d.date)}</th></tr>
+							)}
+							<tr class:list={[`st-${d.status}`, { today: d.date === today }]}>
+								<td class="date">
+									<a href={`${base}?date=${d.date}`}>{WD[weekdayOf(d.date)]} {shortDate(d.date)}</a>
+								</td>
+								<td>
+									{d.status === 'school' && (
+										<>
+											{d.scheduleName}
+											{d.source === 'special' && <span class="pill">special day</span>}
+										</>
+									)}
+									{d.status === 'no-school' && <span class="muted">No school</span>}
+									{d.status === 'unconfigured' && <><code>{d.label}</code> <span class="pill warn">no such tab</span></>}
+									{d.status === 'not-found' && <span class="pill warn">no schedule</span>}
+								</td>
+								<td class="hours">{hours(d.blocks)}</td>
+								<td class="notes">{d.notes}</td>
+							</tr>
+						</>
+					))}
+				</tbody>
+			</table>
+		</div>
+	</div>
+</Layout>
+
+<style>
+	.page {
+		max-width: 1200px;
+		margin: 0 auto;
+		padding-block: 1.5rem 3rem;
+	}
+	h1 {
+		margin: 0.25rem 0 0.5rem;
+	}
+	h2 {
+		margin: 2rem 0 0.75rem;
+		font-size: 1.15rem;
+	}
+	.crumb,
+	.lede,
+	.filters {
+		margin: 0.25rem 0;
+		color: var(--muted);
+	}
+	.alert {
+		border-radius: 10px;
+		padding: 0.8rem 1rem;
+		margin: 1rem 0;
+		border: 1px solid;
+	}
+	.alert ul {
+		margin: 0.4rem 0 0;
+		padding-left: 1.2rem;
+	}
+	.alert.warn {
+		background: var(--warn-bg);
+		border-color: var(--warn);
+	}
+	.alert.bad {
+		background: var(--bad-bg);
+		border-color: var(--bad);
+	}
+	.table-wrap {
+		overflow-x: auto;
+		margin-top: 1rem;
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		background: var(--surface);
+	}
+	table {
+		border-collapse: collapse;
+		width: 100%;
+		min-width: 760px;
+		font-size: 0.92rem;
+	}
+	th,
+	td {
+		text-align: left;
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+	}
+	thead th {
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+	}
+	tr.month th {
+		background: var(--bg);
+		font-size: 0.95rem;
+		padding-top: 0.9rem;
+	}
+	.date {
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+	}
+	.hours {
+		white-space: nowrap;
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.notes {
+		white-space: pre-line;
+		color: var(--muted);
+		font-size: 0.85rem;
+		max-width: 22rem;
+	}
+	tr.st-no-school td {
+		color: var(--muted);
+	}
+	tr.st-unconfigured,
+	tr.st-not-found {
+		background: var(--warn-bg);
+	}
+	tr.today {
+		box-shadow: inset 4px 0 0 var(--accent);
+	}
+	.muted {
+		color: var(--muted);
+	}
+	.pill {
+		display: inline-block;
+		font-size: 0.72rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 0.1rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid var(--border-strong);
+		margin-left: 0.4rem;
+		color: var(--muted);
+	}
+	.pill.warn {
+		border-color: var(--warn);
+		color: var(--warn);
+		margin-left: 0;
+	}
+	code + .pill.warn {
+		margin-left: 0.4rem;
+	}
+	code {
+		font-size: 0.9em;
+	}
+</style>

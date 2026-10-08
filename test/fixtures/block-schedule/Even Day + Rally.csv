@@ -1,0 +1,16 @@
+Period,Start,End,Type,Group
+2,8:30 AM,9:50 AM,,
+Break,9:50 AM,10:00 AM,,
+Check-in,10:05 AM,10:10 AM,Passing,1st Rally
+Walk / Seating,10:10 AM,10:20 AM,Passing,1st Rally
+Rally,10:20 AM,10:50 AM,,1st Rally
+Walk & Check-in,10:50 AM,11:00 AM,Passing,1st Rally
+4,11:00 AM,12:15 PM,,1st Rally
+4,10:05 AM,11:20 AM,,2nd Rally
+Walk / Seating,11:20 AM,11:30 AM,Passing,2nd Rally
+Rally,11:30 AM,12:00 PM,,2nd Rally
+Walk,12:00 PM,12:10 PM,Passing,2nd Rally
+Check-in,12:10 PM,12:15 PM,Passing,2nd Rally
+Lunch,12:15 PM,12:50 PM,,
+6,12:55 PM,2:15 PM,,
+8,2:20 PM,3:40 PM,,

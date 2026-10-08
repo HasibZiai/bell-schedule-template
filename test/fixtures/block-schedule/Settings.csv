@@ -1,0 +1,11 @@
+Setting,Value
+School name,Block Schedule Test School
+Time zone,America/Los_Angeles
+Clock,24-hour
+First day,8/12/2026
+Last day,6/3/2027
+Monday,Anchor Day
+Tuesday,Odd Day + Flex
+Wednesday,Even Day + Flex
+Thursday,Odd Day + Advisory
+Friday,Even Day + Advisory

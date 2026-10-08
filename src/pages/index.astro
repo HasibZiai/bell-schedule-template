@@ -1,0 +1,78 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { schoolProblems } from '../lib/check-schools';
+import { schools } from '../schools.config';
+
+export const prerender = false;
+
+const problems = schoolProblems(schools);
+
+// With one school, go straight to its display; otherwise list them.
+if (schools.length === 1 && problems.length === 0) return Astro.redirect(`/${schools[0].slug}`);
+---
+
+<Layout title="Bell Schedules">
+	<div class="page">
+		<h1>Bell schedules</h1>
+		{problems.length > 0 && (
+			<div class="alert">
+				<strong>Fix these in <code>src/schools.config.ts</code>:</strong>
+				<ul>{problems.map((p) => <li>{p}</li>)}</ul>
+			</div>
+		)}
+		{schools.length === 0 ? (
+			<p class="muted">No schools yet. Add one to <code>src/schools.config.ts</code>.</p>
+		) : (
+			<ul>
+				{schools.map((s) => (
+					<li>
+						<a href={`/${s.slug}`}>{s.slug}</a>
+						<a class="muted" href={`/${s.slug}/preview`}>preview</a>
+					</li>
+				))}
+			</ul>
+		)}
+	</div>
+</Layout>
+
+<style>
+	.page {
+		max-width: 40rem;
+		margin: 0 auto;
+		padding: 2rem 1rem;
+	}
+	ul {
+		list-style: none;
+		padding: 0;
+	}
+	.alert {
+		background: var(--warn-bg);
+		border: 1px solid var(--warn);
+		border-radius: 10px;
+		padding: 0.8rem 1rem;
+		margin: 1rem 0;
+	}
+	.alert ul {
+		list-style: disc;
+		margin: 0.4rem 0 0;
+		padding-left: 1.2rem;
+	}
+	.alert li {
+		display: list-item;
+		border: 0;
+		padding: 0.15rem 0;
+		font-size: 1rem;
+	}
+	li {
+		display: flex;
+		gap: 1rem;
+		align-items: baseline;
+		padding: 0.6rem 0;
+		border-bottom: 1px solid var(--border);
+		font-size: 1.15rem;
+	}
+	.muted {
+		color: var(--muted);
+		font-size: 0.9rem;
+	}
+</style>

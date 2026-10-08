@@ -1,0 +1,887 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { findSchool } from '../../lib/school';
+
+export const prerender = false;
+
+const config = findSchool(Astro.params.school);
+if (!config) return Astro.redirect('/');
+---
+
+<Layout title="Bell Schedule">
+	<div class="app">
+		<header class="top">
+			<div class="school" id="school">Bell Schedule</div>
+			<div class="today">
+				<span id="date"></span>
+				<span class="badge" id="daytype" hidden></span>
+				<select class="theme-picker" id="theme-picker" aria-label="Color theme">
+					<option value="auto">Auto theme</option>
+					<option value="light">Light</option>
+					<option value="dark">Dark</option>
+				</select>
+			</div>
+		</header>
+
+		<main class="grid">
+			<section class="now">
+				<div class="clock" id="clock" aria-live="off">
+					<span id="clock-hm">--:--</span><span class="sec" id="clock-s">:--</span><span class="ampm" id="clock-ampm"></span>
+				</div>
+				<div class="card status" id="status">
+					<p class="eyebrow">Loading schedule…</p>
+				</div>
+				<div class="card notes" id="notes" hidden>
+					<p class="eyebrow">Today</p>
+					<ul id="notes-list"></ul>
+				</div>
+			</section>
+
+			<section class="card schedule">
+				<div class="schedule-head">
+					<h2 id="schedule-name">Today's schedule</h2>
+					<div class="toggle" id="track-toggle" role="group" aria-label="Rally view" hidden>
+						<button type="button" data-view="split">Split</button>
+						<button type="button" data-view="unified">Unified</button>
+					</div>
+				</div>
+				<ol class="blocks" id="blocks"></ol>
+			</section>
+		</main>
+
+		<footer class="foot">
+			<span id="stale" hidden>⚠ Showing a saved copy — the calendar couldn't be refreshed.</span>
+			<a class="upcoming" href={`/${config.slug}/preview`}>Upcoming days</a>
+			<a class="open-full" href={`/${config.slug}`} target="_blank" rel="noopener">Open full display ↗</a>
+		</footer>
+	</div>
+</Layout>
+
+<script>
+	import { formatLongDate, formatTime, isIsoDate, toSeconds, zonedNow } from '../../lib/time';
+	import type { Block, DaySchedule, Segment, TodayResponse } from '../../lib/types';
+
+	// ---- Options (URL params) -------------------------------------------------------------
+	//   ?date=2026-10-23   show another day (testing / preview)
+	//   ?time=10:30        pretend the clock reads this time (it keeps ticking from there)
+	//   ?view=unified      rally-style days as one block instead of side-by-side tracks
+	//   ?kiosk             hide controls and keep the screen awake
+	//   ?embed             compact single column for an iframe on another site
+	const school = location.pathname.split('/')[1];
+	const params = new URLSearchParams(location.search);
+	const pinnedDate = isIsoDate(params.get('date')) ? params.get('date') : null;
+	const fakeTime = params.get('time')?.match(/^(\d{1,2}):(\d{2})$/);
+	const kiosk = params.has('kiosk');
+	const embed = params.has('embed');
+	if (kiosk) document.body.classList.add('kiosk');
+	if (embed) document.body.classList.add('embed');
+
+	// How often an open page checks for schedule edits. Wall displays (?kiosk) check every minute since
+	// nobody refreshes them; phones and laptops check every 5 minutes, plus right away when the tab is
+	// opened or shown again, which keeps the site's request count low with many viewers.
+	const POLL_MS = kiosk ? 60 * 1000 : 5 * 60 * 1000;
+	/** A tab coming back into view refreshes if its data is older than this. */
+	const REVISIT_MS = 30 * 1000;
+
+	let view: 'split' | 'unified' = 'split';
+	try {
+		const saved = localStorage.getItem('trackView');
+		if (saved === 'split' || saved === 'unified') view = saved;
+	} catch {}
+	if (params.get('view') === 'split' || params.get('view') === 'unified') view = params.get('view') as typeof view;
+
+	// ---- State -------------------------------------------------------------------------------
+	let data: TodayResponse | null = null;
+	// The device's zone until the school's arrives with the first response.
+	let timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	/** Server clock minus device clock, so countdowns match the bells even when a device's clock is off. */
+	let skewMs = 0;
+	/** ?time= testing offset. */
+	let offsetMs = 0;
+	let lastFetch = 0;
+	let renderedKey = '';
+	/** The school-day date the page was opened on; the nightly reload waits for a later one. */
+	let openedOn: string | null = null;
+	let lastReloadTry = 0;
+
+	const $ = (id: string) => document.getElementById(id)!;
+	const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+	const now = () => zonedNow(timeZone, new Date(Date.now() + skewMs + offsetMs));
+	const fmt = (hhmm: string) => formatTime(hhmm, data?.clock24);
+
+	// ---- Data --------------------------------------------------------------------------------
+	async function load() {
+		lastFetch = Date.now();
+		try {
+			const q = pinnedDate ? `?date=${pinnedDate}` : `?date=${now().date}`;
+			const sent = Date.now();
+			const res = await fetch(`/api/${school}/today${q}`, { cache: 'no-store' });
+			const received = Date.now();
+			if (!res.ok) throw new Error(String(res.status));
+			data = (await res.json()) as TodayResponse;
+			// The server's time was taken about halfway through the request. Skip slow round trips, and
+			// ignore sub-second changes so countdowns don't jitter.
+			if (received - sent < 3000) {
+				const skew = Date.parse(data.generatedAt) - (sent + received) / 2;
+				if (Math.abs(skew - skewMs) > 1000) skewMs = skew;
+			}
+			const tzChanged = data.timeZone !== timeZone;
+			timeZone = data.timeZone;
+			if (fakeTime && (tzChanged || offsetMs === 0)) {
+				const target = Number(fakeTime[1]) * 3600 + Number(fakeTime[2]) * 60;
+				offsetMs = (target - zonedNow(timeZone, new Date(Date.now() + skewMs)).seconds) * 1000;
+			}
+			openedOn ??= now().date;
+			$('stale').hidden = !data.stale;
+			renderHeader();
+			renderedKey = '';
+		} catch (err) {
+			console.error('Failed to load schedule', err);
+			$('stale').hidden = false;
+		}
+		tick();
+	}
+
+	// Reloading while offline would leave a blank page, so check the site is reachable first (every 5 minutes).
+	function reloadWhenOnline() {
+		if (Date.now() - lastReloadTry < 5 * 60 * 1000) return;
+		lastReloadTry = Date.now();
+		fetch(location.href, { method: 'HEAD', cache: 'no-store' })
+			.then((res) => res.ok && location.reload())
+			.catch(() => {});
+	}
+
+	// ---- Time analysis -------------------------------------------------------------------
+	type Found<T> = { item: T; index: number } | undefined;
+	const within = (s: Segment, t: number) => t >= toSeconds(s.start) && t < toSeconds(s.end);
+
+	function analyze(day: DaySchedule, t: number) {
+		const indexed = day.blocks.map((item, index) => ({ item, index }));
+		const student = indexed.filter((x) => x.item.kind !== 'staff');
+		const current: Found<Block> = student.find((x) => within(x.item, t));
+		const next: Found<Block> = student.find((x) => toSeconds(x.item.start) > t);
+		const staffNow = indexed.filter((x) => x.item.kind === 'staff' && within(x.item, t)).map((x) => x.index);
+		let mode: 'none' | 'before' | 'in' | 'passing' | 'after' = 'none';
+		if (student.length) {
+			if (current) mode = 'in';
+			else if (t < toSeconds(student[0].item.start)) mode = 'before';
+			else if (next) mode = 'passing';
+			else mode = 'after';
+		}
+		const prevEnd = Math.max(0, ...student.filter((x) => toSeconds(x.item.end) <= t).map((x) => toSeconds(x.item.end)));
+		return { mode, current, next, staffNow, prevEnd };
+	}
+
+	function segmentState(segments: Segment[], t: number) {
+		const current = segments.find((s) => within(s, t));
+		const next = segments.find((s) => toSeconds(s.start) > t);
+		return { current, next };
+	}
+
+	// ---- Rendering ---------------------------------------------------------------------------
+
+	function renderHeader() {
+		if (!data) return;
+		const { day } = data;
+		$('school').textContent = data.school;
+		document.title = `${data.school} · Bell Schedule`;
+		$('date').textContent = formatLongDate(day.date);
+		const badge = $('daytype');
+		badge.hidden = !day.label;
+		badge.textContent = day.label ?? '';
+		$('schedule-name').textContent = day.scheduleName ?? "Today's schedule";
+
+		const notes = (day.notes ?? '').split('\n').filter(Boolean);
+		$('notes').hidden = notes.length === 0;
+		$('notes-list').innerHTML = notes.map((n) => `<li>${esc(n)}</li>`).join('');
+
+
+		const hasTracks = day.blocks.some((b) => b.tracks?.length);
+		$('track-toggle').hidden = !hasTracks || kiosk || embed;
+		updateToggle();
+	}
+
+	function updateToggle() {
+		document.querySelectorAll<HTMLButtonElement>('#track-toggle button').forEach((b) => {
+			b.setAttribute('aria-pressed', String(b.dataset.view === view));
+		});
+	}
+
+	const countdown = (toSec: number) => `<span data-until="${toSec}"></span>`;
+	const progress = (from: number, to: number) =>
+		`<div class="bar"><div class="fill" data-from="${from}" data-to="${to}"></div></div>`;
+	const range = (s: Segment) => `${fmt(s.start)} – ${fmt(s.end)}`;
+
+	// ---- End-of-day messages -----------------------------------------------------------------
+	// Edit freely. One is picked per day (from the date), so every screen shows the same message all
+	// afternoon. "{part}" becomes "afternoon" or "evening". Avoid "see you tomorrow": the next day may be a holiday.
+	const LAST_CLASS = ['Last class of the day. You’ve got this!'];
+	const AFTER_SCHOOL = [
+		'You made it!',
+		'That’s a wrap!',
+		'Have a great {part}!',
+		'Proud of you for showing up today!',
+	];
+	const FRIDAY = ['Have a great weekend!', 'Enjoy your weekend!'];
+	/** The same pick all day for a given date, different from day to day. */
+	function dailyPick(list: string[], date: string): string {
+		let hash = 0;
+		for (const ch of date) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+		return list[hash % list.length];
+	}
+	const isFriday = (date: string) => new Date(`${date}T12:00:00Z`).getUTCDay() === 5;
+
+	function renderStatus(day: DaySchedule, a: ReturnType<typeof analyze>, t: number): string {
+		if (day.status === 'no-school') {
+			return `<p class="eyebrow">No school today</p><p class="big">${esc(day.notes?.split('\n')[0] || 'Enjoy your day')}</p>`;
+		}
+		if (day.status === 'unconfigured') {
+			return `<p class="eyebrow">${esc(day.label ?? '')}</p><p class="big">Special schedule</p>
+				<p class="sub">There's no tab with this schedule's name in the school's schedule sheet yet.</p>`;
+		}
+		if (day.status === 'not-found' || a.mode === 'none') {
+			return `<p class="eyebrow">No schedule listed</p><p class="big">—</p>
+				<p class="sub">${data?.stale ? "The school calendar couldn't be loaded." : 'This date isn’t on the school calendar.'}</p>`;
+		}
+		if (a.mode === 'after') {
+			const message = dailyPick(isFriday(day.date) ? FRIDAY : AFTER_SCHOOL, day.date).replace('{part}', t < 17 * 3600 ? 'afternoon' : 'evening');
+			return `<p class="eyebrow">School's out</p><p class="big">${esc(message)}</p>`;
+		}
+		if (a.mode === 'before' || a.mode === 'passing') {
+			const n = a.next!.item;
+			const label = a.mode === 'before' ? 'Before school' : 'Passing period';
+			const from = a.mode === 'passing' ? a.prevEnd : toSeconds(n.start) - 3600;
+			return `<p class="eyebrow">${label}</p>
+				<p class="big">${esc(n.name)} <span class="muted">at ${fmt(n.start)}</span></p>
+				<p class="count">starts in ${countdown(toSeconds(n.start))}</p>
+				${a.mode === 'passing' ? progress(from, toSeconds(n.start)) : ''}`;
+		}
+
+		const b = a.current!.item;
+		const nextLine = a.next
+			? `<p class="sub">Next: <strong>${esc(a.next.item.name)}</strong> at ${fmt(a.next.item.start)}</p>`
+			: `<p class="sub">${esc(dailyPick(LAST_CLASS, day.date))}</p>`;
+
+		if (b.tracks?.length && view === 'split') {
+			const cols = b.tracks
+				.map((tr) => {
+					const s = segmentState(tr.segments, t);
+					const body = s.current
+						? `<p class="track-now">${esc(s.current.name)}</p>
+						   <p class="count">ends in ${countdown(toSeconds(s.current.end))}</p>
+						   ${progress(toSeconds(s.current.start), toSeconds(s.current.end))}`
+						: s.next
+							? `<p class="track-now">${esc(s.next.name)}</p><p class="count">in ${countdown(toSeconds(s.next.start))}</p>`
+							: `<p class="track-now muted">Done</p>`;
+					return `<div class="track"><p class="track-name">${esc(tr.name)}</p>
+						${tr.detail ? `<p class="track-detail">${esc(tr.detail)}</p>` : ''}${body}</div>`;
+				})
+				.join('');
+			return `<p class="eyebrow">Now · ${range(b)}</p><p class="big">${esc(b.name)}</p>
+				<div class="tracks">${cols}</div>${nextLine}`;
+		}
+
+		return `<p class="eyebrow">Now · ${range(b)}</p>
+			<p class="big kind-${b.kind ?? 'class'}">${esc(b.name)}</p>
+			<p class="count">ends in ${countdown(toSeconds(b.end))}</p>
+			${progress(toSeconds(b.start), toSeconds(b.end))}
+			${nextLine}`;
+	}
+
+	function renderBlocks(day: DaySchedule, a: ReturnType<typeof analyze>, t: number): string {
+		if (!day.blocks.length) {
+			const msg =
+				day.status === 'no-school' ? 'No classes today.'
+				: day.status === 'unconfigured' ? 'Bell times for this schedule haven’t been added yet.'
+				: 'Nothing scheduled.';
+			return `<li class="empty">${msg}</li>`;
+		}
+		return day.blocks
+			.map((b, i) => {
+				const cls = [
+					`kind-${b.kind ?? 'class'}`,
+					t >= toSeconds(b.end) ? 'past' : '',
+					a.current?.index === i || a.staffNow.includes(i) ? 'current' : '',
+					a.mode !== 'in' && a.next?.index === i ? 'next' : '',
+				].join(' ');
+				const mins = (toSeconds(b.end) - toSeconds(b.start)) / 60;
+				const tag = b.kind === 'staff' ? '<span class="tag">Staff</span>' : '';
+				let extra = '';
+				if (b.tracks?.length) {
+					extra =
+						view === 'split'
+							? `<div class="track-cols">${b.tracks
+									.map((tr) => {
+										const cur = segmentState(tr.segments, t).current;
+										return `<div class="track-col"><p class="track-name">${esc(tr.name)}</p>
+										${tr.detail ? `<p class="track-detail">${esc(tr.detail)}</p>` : ''}
+										<ul>${tr.segments
+											.map(
+												(s) =>
+													`<li class="kind-${s.kind ?? 'class'} ${s === cur ? 'current' : ''} ${t >= toSeconds(s.end) ? 'past' : ''}">
+													<span class="t">${range(s)}</span><span>${esc(s.name)}</span></li>`,
+											)
+											.join('')}</ul></div>`;
+									})
+									.join('')}</div>`
+							: `<p class="track-detail">Times vary by group: ${b.tracks.map((tr) => esc(tr.name)).join(' / ')}</p>`;
+				}
+				return `<li class="${cls}">
+					<span class="t">${range(b)}</span>
+					<span class="name">${esc(b.name)}${tag}${extra}</span>
+					<span class="mins">${mins} min</span>
+				</li>`;
+			})
+			.join('');
+	}
+
+	function fmtCountdown(sec: number) {
+		sec = Math.max(0, sec);
+		const h = Math.floor(sec / 3600);
+		const m = Math.floor((sec % 3600) / 60);
+		const s = sec % 60;
+		return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+	}
+
+	function tick() {
+		const n = now();
+		const t = n.seconds;
+
+		const h = Math.floor(t / 3600);
+		const hm = `${String(h).padStart(2, '0')}:${String(Math.floor((t % 3600) / 60)).padStart(2, '0')}`;
+		$('clock-hm').textContent = fmt(hm);
+		$('clock-s').textContent = `:${String(t % 60).padStart(2, '0')}`;
+		$('clock-ampm').textContent = data?.clock24 ? '' : h < 12 ? 'AM' : 'PM';
+
+		// Once a night (after 3 AM), reload so displays left on for weeks pick up new versions of the page.
+		if (!pinnedDate && !fakeTime && openedOn && n.date > openedOn && t >= 3 * 3600) reloadWhenOnline();
+
+		// Hidden tabs (background, locked phone) don't check for updates; they catch up when shown again.
+		const visible = document.visibilityState === 'visible';
+		if (visible && !pinnedDate && data && n.date !== data.day.date && Date.now() - lastFetch > 5000) {
+			load(); // midnight rollover
+			return;
+		}
+		if (visible && Date.now() - lastFetch > POLL_MS) load();
+		if (!data) return;
+
+		const day = data.day;
+		const a = analyze(day, t);
+		// Re-render structure only when what's current changes; countdowns update in place below.
+		const segKey = day.blocks
+			.flatMap((b) => b.tracks ?? [])
+			.map((tr) => tr.segments.findIndex((s) => within(s, t)))
+			.join(',');
+		const key = [day.date, view, a.mode, a.current?.index, a.next?.index, a.staffNow, segKey,
+			day.blocks.filter((b) => t >= toSeconds(b.end)).length].join('|');
+		if (key !== renderedKey) {
+			renderedKey = key;
+			$('status').innerHTML =
+				renderStatus(day, a, t);
+			$('blocks').innerHTML = renderBlocks(day, a, t);
+		}
+
+		document.querySelectorAll<HTMLElement>('[data-until]').forEach((el) => {
+			el.textContent = fmtCountdown(Number(el.dataset.until) - t);
+		});
+		document.querySelectorAll<HTMLElement>('.fill').forEach((el) => {
+			const from = Number(el.dataset.from);
+			const to = Number(el.dataset.to);
+			el.style.width = `${Math.min(100, Math.max(0, ((t - from) / (to - from)) * 100))}%`;
+		});
+	}
+
+	// ---- Wiring ------------------------------------------------------------------------------
+	document.querySelectorAll<HTMLButtonElement>('#track-toggle button').forEach((btn) => {
+		btn.addEventListener('click', () => {
+			view = btn.dataset.view as typeof view;
+			try {
+				localStorage.setItem('trackView', view);
+			} catch {}
+			updateToggle();
+			renderedKey = '';
+			tick();
+		});
+	});
+
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'visible' && Date.now() - lastFetch > REVISIT_MS) load();
+	});
+
+	// Theme menu: Auto follows the device. The choice is remembered on this device (Layout applies it on load).
+	// (Not HTMLSelectElement: the Workers types' global Element clashes with it.)
+	const picker = $('theme-picker') as HTMLElement & { value: string };
+	picker.hidden = kiosk || embed;
+	picker.value = document.documentElement.dataset.theme ?? 'auto';
+	picker.addEventListener('change', () => {
+		const theme = picker.value;
+		if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+		else delete document.documentElement.dataset.theme;
+		try {
+			if (theme === 'auto') localStorage.removeItem('theme');
+			else localStorage.setItem('theme', theme);
+		} catch {}
+	});
+
+	if (kiosk && 'wakeLock' in navigator) {
+		const lock = () => navigator.wakeLock.request('screen').catch(() => {});
+		lock();
+		document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && lock());
+	}
+
+	function loop() {
+		tick();
+		setTimeout(loop, 1000 - (Date.now() % 1000) + 5);
+	}
+	load();
+	loop();
+</script>
+
+<style>
+	.app {
+		max-width: 1400px;
+		margin: 0 auto;
+		padding-block: clamp(1rem, 2.5vw, 2rem);
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		min-height: 100dvh;
+		box-sizing: border-box;
+	}
+	.top {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.5rem 1.5rem;
+	}
+	.school {
+		font-weight: 700;
+		font-size: clamp(1.1rem, 2vw, 1.5rem);
+		letter-spacing: 0.01em;
+	}
+	.today {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.6rem;
+		color: var(--muted);
+		font-size: clamp(1rem, 1.6vw, 1.25rem);
+	}
+	.theme-picker {
+		font: inherit;
+		font-size: 0.8em;
+		color: var(--text);
+		background: var(--surface);
+		border: 1px solid var(--border-strong);
+		border-radius: 999px;
+		padding: 0.25em 0.6em;
+		cursor: pointer;
+	}
+	.theme-picker:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+	.badge {
+		background: var(--accent);
+		color: var(--on-accent);
+		font-weight: 700;
+		font-size: 0.85em;
+		padding: 0.25em 0.7em;
+		border-radius: 999px;
+		letter-spacing: 0.03em;
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+		gap: 1.25rem;
+		align-items: start;
+		align-content: start;
+		flex: 1;
+	}
+	@media (max-width: 900px) {
+		.grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
+	.now {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+	}
+
+	.clock {
+		font-size: clamp(4rem, 11vw, 10rem);
+		font-weight: 700;
+		line-height: 1;
+		letter-spacing: -0.03em;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.clock .sec {
+		color: var(--muted);
+		font-size: 0.45em;
+		font-weight: 600;
+	}
+	.clock .ampm {
+		font-size: 0.3em;
+		font-weight: 600;
+		margin-left: 0.3em;
+		color: var(--muted);
+		letter-spacing: 0;
+	}
+
+	.card {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 16px;
+		padding: clamp(1rem, 2vw, 1.5rem);
+	}
+
+	.status :global(.eyebrow),
+	.notes .eyebrow {
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		font-size: 0.85rem;
+		font-weight: 700;
+		color: var(--muted);
+		margin: 0 0 0.35rem;
+	}
+	.status :global(.big) {
+		font-size: clamp(2rem, 4.5vw, 3.5rem);
+		font-weight: 800;
+		line-height: 1.1;
+		margin: 0;
+	}
+	.status :global(.count) {
+		font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+		margin: 0.5rem 0 0;
+		font-variant-numeric: tabular-nums;
+	}
+	.status :global(.count span) {
+		font-weight: 700;
+		color: var(--accent);
+	}
+	.status :global(.sub) {
+		color: var(--muted);
+		margin: 0.9rem 0 0;
+		font-size: 1.05rem;
+	}
+	.status :global(.muted),
+	.muted {
+		color: var(--muted);
+		font-weight: 500;
+	}
+	.status :global(.bar) {
+		height: 10px;
+		background: var(--track);
+		border-radius: 999px;
+		overflow: hidden;
+		margin-top: 0.75rem;
+	}
+	.status :global(.fill) {
+		height: 100%;
+		background: var(--accent);
+		border-radius: inherit;
+		transition: width 1s linear;
+	}
+	.status :global(.tracks) {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+		gap: 0.75rem;
+		margin-top: 0.9rem;
+	}
+	.status :global(.track) {
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		padding: 0.8rem 0.9rem;
+	}
+	.status :global(.track-now) {
+		font-size: 1.4rem;
+		font-weight: 700;
+		margin: 0.35rem 0 0;
+	}
+	.status :global(.track .count) {
+		font-size: 1.1rem;
+		margin-top: 0.2rem;
+	}
+
+	:global(.track-name) {
+		font-weight: 700;
+		margin: 0;
+	}
+	:global(.track-detail) {
+		color: var(--muted);
+		font-size: 0.85rem;
+		margin: 0.1rem 0 0;
+		font-weight: 400;
+	}
+
+	.notes ul {
+		margin: 0;
+		padding-left: 1.1rem;
+		display: grid;
+		gap: 0.25rem;
+		font-size: 1.05rem;
+	}
+
+	.schedule-head {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.5rem 1rem;
+		margin-bottom: 0.75rem;
+	}
+	.schedule-head h2 {
+		margin: 0;
+		font-size: 1.15rem;
+	}
+	.toggle {
+		display: inline-flex;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 2px;
+	}
+	.toggle button {
+		font: inherit;
+		font-size: 0.85rem;
+		border: 0;
+		background: transparent;
+		color: var(--muted);
+		padding: 0.3rem 0.85rem;
+		border-radius: 999px;
+		cursor: pointer;
+	}
+	.toggle button[aria-pressed='true'] {
+		background: var(--accent);
+		color: var(--on-accent);
+		font-weight: 600;
+	}
+
+	.blocks {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.blocks > :global(li) {
+		display: grid;
+		grid-template-columns: 8.5rem minmax(0, 1fr) auto;
+		gap: 0.75rem;
+		align-items: baseline;
+		padding: 0.65rem 0.75rem;
+		border-radius: 10px;
+		font-size: clamp(1rem, 1.4vw, 1.2rem);
+		border-left: 4px solid transparent;
+	}
+	.blocks > :global(li.empty) {
+		display: block;
+		color: var(--muted);
+	}
+	.blocks > :global(li + li) {
+		margin-top: 2px;
+	}
+	.blocks :global(.t),
+	.blocks :global(.mins) {
+		font-variant-numeric: tabular-nums;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+	.blocks :global(.mins) {
+		font-size: 0.85em;
+	}
+	.blocks :global(.name) {
+		font-weight: 600;
+	}
+	.blocks > :global(li.kind-break),
+	.blocks > :global(li.kind-lunch),
+	.blocks > :global(li.kind-passing) {
+		background: var(--break-bg);
+	}
+	.blocks > :global(li.kind-advisory) {
+		background: var(--advisory-bg);
+	}
+	.blocks > :global(li.kind-event) {
+		background: var(--event-bg);
+	}
+	.blocks > :global(li.kind-staff) {
+		font-size: 0.85rem;
+		padding-block: 0.35rem;
+		color: var(--muted);
+	}
+	.blocks > :global(li.kind-staff .name) {
+		font-weight: 500;
+		font-style: italic;
+	}
+	.blocks :global(.tag) {
+		font-style: normal;
+		font-size: 0.7rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		padding: 0.05rem 0.35rem;
+		margin-left: 0.5rem;
+		vertical-align: 0.1em;
+	}
+	.blocks > :global(li.past) {
+		opacity: 0.45;
+	}
+	.blocks > :global(li.next) {
+		border-left-color: var(--border-strong);
+	}
+	.blocks > :global(li.current) {
+		border-left-color: var(--accent);
+		background: var(--current-bg);
+		opacity: 1;
+	}
+	.blocks > :global(li.current .name) {
+		color: var(--accent-text);
+	}
+
+	.blocks :global(.track-cols) {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+		gap: 0.75rem;
+		margin-top: 0.6rem;
+		font-weight: 400;
+		font-size: 0.9rem;
+	}
+	.blocks :global(.track-col) {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 0.6rem 0.7rem;
+	}
+	.blocks :global(.track-col ul) {
+		list-style: none;
+		margin: 0.4rem 0 0;
+		padding: 0;
+		display: grid;
+		gap: 2px;
+	}
+	.blocks :global(.track-col li) {
+		display: grid;
+		grid-template-columns: 7.25rem 1fr;
+		gap: 0.4rem;
+		padding: 0.15rem 0.35rem;
+		border-radius: 4px;
+	}
+	.blocks :global(.track-col li.past) {
+		opacity: 0.45;
+	}
+	.blocks :global(.track-col li.kind-event) {
+		font-weight: 700;
+	}
+	.blocks :global(.track-col li.current) {
+		background: var(--current-bg);
+		color: var(--accent-text);
+		font-weight: 700;
+	}
+
+	@media (max-width: 520px) {
+		.blocks > :global(li) {
+			grid-template-columns: minmax(0, 1fr) auto;
+		}
+		.blocks > :global(li .t) {
+			grid-column: 1 / -1;
+			font-size: 0.85em;
+		}
+	}
+
+	.foot {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		gap: 0.5rem 1rem;
+		color: var(--muted);
+		font-size: 0.85rem;
+	}
+	.foot a {
+		color: inherit;
+		margin-left: auto;
+	}
+	:global(body.kiosk) .foot a,
+	:global(body.embed) .foot .upcoming,
+	.foot .open-full {
+		display: none;
+	}
+	:global(body.embed) .foot .open-full {
+		display: inline;
+	}
+
+	/* ?embed: one compact column sized for an iframe on a school's website. */
+	:global(body.embed) {
+		padding: 0 12px;
+	}
+	:global(body.embed) .app {
+		padding-block: 12px;
+		gap: 0.75rem;
+		min-height: 0;
+	}
+	:global(body.embed) .school {
+		font-size: 1.05rem;
+	}
+	:global(body.embed) .today {
+		font-size: 0.9rem;
+	}
+	:global(body.embed) .grid {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0.75rem;
+	}
+	:global(body.embed) .now {
+		gap: 0.75rem;
+	}
+	:global(body.embed) .clock {
+		font-size: 2.75rem;
+	}
+	:global(body.embed) .card {
+		border-radius: 12px;
+		padding: 0.85rem 1rem;
+	}
+	:global(body.embed) .status :global(.big) {
+		font-size: 1.75rem;
+	}
+	:global(body.embed) .status :global(.count) {
+		font-size: 1.1rem;
+	}
+	:global(body.embed) .status :global(.sub) {
+		font-size: 0.95rem;
+		margin-top: 0.6rem;
+	}
+	:global(body.embed) .status :global(.track-now) {
+		font-size: 1.15rem;
+	}
+	:global(body.embed) .notes ul {
+		font-size: 0.95rem;
+	}
+	:global(body.embed) .schedule-head h2 {
+		font-size: 1rem;
+	}
+	/* Rows stay on one line (the narrow-screen layout above puts the time on its own line). */
+	:global(body.embed) .blocks > :global(li) {
+		grid-template-columns: 6.75rem minmax(0, 1fr) auto;
+		font-size: 0.95rem;
+		padding: 0.45rem 0.6rem;
+	}
+	:global(body.embed) .blocks > :global(li .t) {
+		grid-column: auto;
+		font-size: inherit;
+	}
+	@media (max-width: 420px) {
+		:global(body.embed) .blocks > :global(li) {
+			grid-template-columns: 6.75rem minmax(0, 1fr);
+		}
+		:global(body.embed) .blocks :global(.mins) {
+			display: none;
+		}
+	}
+	@media (max-width: 520px) {
+		/* A block with groups (e.g. a rally) puts its group columns under the time, at full width. */
+		:global(body.embed) .blocks > :global(li:has(.track-cols) .name) {
+			grid-column: 1 / -1;
+		}
+	}
+</style>

@@ -1,0 +1,7 @@
+How to use this sheet
+"Settings: your school's name, time zone, clock (12-hour or 24-hour), first and last day, and the normal schedule for each weekday."
+"One tab per bell schedule. The tab's name is the schedule's name. Columns: Period, Start, End."
+"Special Days: only the days that are different. Pick a schedule (or No School) for each date. For several days in a row, fill in End Date."
+"To add a schedule, duplicate a tab (right-click the tab > Duplicate), rename it, and change the times."
+"Optional columns on a schedule tab: Type (Class, Break, Lunch, Passing, Advisory, Event, Staff) and Group (for times that differ by grade or building)."
+"Tabs named Instructions, or starting with _, are ignored."

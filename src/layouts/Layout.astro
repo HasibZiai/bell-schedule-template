@@ -1,0 +1,118 @@
+---
+interface Props {
+	title: string;
+}
+const { title } = Astro.props;
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<link rel="icon" href="/favicon.ico" sizes="48x48" />
+		<link rel="icon" type="image/png" href="/favicon.png" sizes="192x192" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<meta name="generator" content={Astro.generator} />
+		<title>{title}</title>
+		<script is:inline>
+			// ?theme=dark|light forces a theme (handy for hallway TVs); otherwise the choice saved from the
+			// display's theme menu; otherwise follow the device. Runs before paint so there's no flash.
+			let t = new URLSearchParams(location.search).get('theme');
+			if (t !== 'dark' && t !== 'light') {
+				try {
+					t = localStorage.getItem('theme');
+				} catch {}
+			}
+			if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+		</script>
+	</head>
+	<body>
+		<slot />
+	</body>
+</html>
+
+<style is:global>
+	:root {
+		color-scheme: light;
+		--bg: #f3f4f6;
+		--surface: #ffffff;
+		--text: #111827;
+		--muted: #5b6472;
+		--border: #e2e5ea;
+		--border-strong: #b8bec8;
+		--accent: #1d5fd6;
+		--accent-text: #1a52b8;
+		--on-accent: #ffffff;
+		--track: #e6e9ee;
+		--current-bg: #e8f0fd;
+		--break-bg: #f7f3e8;
+		--advisory-bg: #f2effa;
+		--event-bg: #fbeef0;
+		--warn: #a15c00;
+		--warn-bg: #fff4e0;
+		--bad: #b42318;
+		--bad-bg: #fdecea;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root:not([data-theme='light']) {
+			color-scheme: dark;
+			--bg: #0d1117;
+			--surface: #161b22;
+			--text: #e8edf3;
+			--muted: #8f99a6;
+			--border: #2b323c;
+			--border-strong: #4a5360;
+			--accent: #5aa2ff;
+			--accent-text: #8cbcff;
+			--on-accent: #06121f;
+			--track: #262d37;
+			--current-bg: #13233b;
+			--break-bg: #1c1a14;
+			--advisory-bg: #1a1726;
+			--event-bg: #251519;
+			--warn: #f0b35a;
+			--warn-bg: #2a2010;
+			--bad: #ff8a80;
+			--bad-bg: #2d1414;
+		}
+	}
+	:root[data-theme='dark'] {
+		color-scheme: dark;
+		--bg: #0d1117;
+		--surface: #161b22;
+		--text: #e8edf3;
+		--muted: #8f99a6;
+		--border: #2b323c;
+		--border-strong: #4a5360;
+		--accent: #5aa2ff;
+		--accent-text: #8cbcff;
+		--on-accent: #06121f;
+		--track: #262d37;
+		--current-bg: #13233b;
+		--break-bg: #1c1a14;
+		--advisory-bg: #1a1726;
+		--event-bg: #251519;
+		--warn: #f0b35a;
+		--warn-bg: #2a2010;
+		--bad: #ff8a80;
+		--bad-bg: #2d1414;
+	}
+	html {
+		background: var(--bg);
+	}
+	body {
+		margin: 0;
+		padding: env(safe-area-inset-top, 0) max(16px, 2.5vw) env(safe-area-inset-bottom, 0);
+		background: var(--bg);
+		color: var(--text);
+		font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+		line-height: 1.4;
+		-webkit-font-smoothing: antialiased;
+	}
+	[hidden] {
+		display: none !important;
+	}
+	a {
+		color: var(--accent-text);
+	}
+</style>
